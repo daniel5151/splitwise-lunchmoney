@@ -2350,6 +2350,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
+name = "splitwise-backup"
+version = "0.4.0"
+dependencies = [
+ "anstream",
+ "anyhow",
+ "clap",
+ "futures-util",
+ "jiff",
+ "lm-common",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml_edit",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

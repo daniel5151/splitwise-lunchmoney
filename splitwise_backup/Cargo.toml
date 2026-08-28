@@ -1,0 +1,26 @@
+[package]
+name = "splitwise-backup"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "splitwise_backup"
+path = "src/main.rs"
+
+[dependencies]
+lm-common.workspace = true
+
+anstream.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+futures-util.workspace = true
+jiff.workspace = true
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
+rustls.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+toml_edit.workspace = true
+
+[lints]
+workspace = true

@@ -10,6 +10,7 @@ members = [
     "lm_venmo_plaidfix",
     "lm_web",
     "lm_utils",
+    "splitwise_backup",
 ]
 default-members = [
     "lm_utils",
