@@ -12,6 +12,7 @@ use lm_common::style::*;
 use serde::Serialize;
 
 use crate::client::RawClient;
+use crate::client::count_json_files_in_dir;
 use crate::client::read_json_file;
 use crate::client::write_json_file;
 use crate::media::download_all_media;
@@ -213,10 +214,42 @@ pub async fn run(
         all_expenses.len()
     };
 
+    // Pre-populate individual expense files and empty comments records from the aggregated feed.
+    // This avoids thousands of redundant get_expense/{id} calls and skips get_comments for
+    // expenses with 0 comments.
+    let mut prefilled_expenses = 0usize;
+    let mut prefilled_empty_comments = 0usize;
+    for exp in &all_expenses {
+        if let Some(eid) = exp.get("id").and_then(|v| v.as_u64()) {
+            let exp_file = expenses_dir.join(format!("{eid}.json"));
+            if !exp_file.is_file() {
+                let _ = write_json_file(&exp_file, &serde_json::json!({ "expense": exp }));
+                prefilled_expenses += 1;
+            }
+
+            let com_file = comments_dir.join(format!("expense_{eid}.json"));
+            if !com_file.is_file() {
+                let comments_count = exp.get("comments_count").and_then(|v| v.as_u64());
+                if comments_count == Some(0) {
+                    let _ = write_json_file(&com_file, &serde_json::json!({ "comments": [] }));
+                    prefilled_empty_comments += 1;
+                }
+            }
+        }
+    }
+    if prefilled_expenses > 0 || prefilled_empty_comments > 0 {
+        println! {
+            "  {STYLE_DIM}✓ Pre-cached {} individual expense files and {} zero-comment records (saved {} redundant API calls){STYLE_DIM:#}",
+            prefilled_expenses,
+            prefilled_empty_comments,
+            prefilled_expenses + prefilled_empty_comments,
+        };
+    }
+
     println! {};
 
     // ── Phase 4: Deep Traversal & Entity Extraction ──────────
-    println! { "{STYLE_HEADER}▶ Phase 4/5: Traversing Deep Entity Details (Groups, Friends, Users, Expense details & Comments)...{STYLE_HEADER:#}" };
+    println! { "{STYLE_HEADER}▶ Phase 4/5: Traversing Deep Entity Details (Groups, Friends, Expenses, Comments & Users)...{STYLE_HEADER:#}" };
 
     // 1. Groups
     let mut group_ids = HashSet::new();
@@ -231,6 +264,17 @@ pub async fn run(
         if let Some(gid) = exp.get("group_id").and_then(|v| v.as_u64()) {
             if gid > 0 {
                 group_ids.insert(gid);
+            }
+        }
+    }
+    for f in &friends_list {
+        if let Some(groups) = f.get("groups").and_then(|g| g.as_array()) {
+            for grp in groups {
+                if let Some(gid) = grp.get("group_id").and_then(|v| v.as_u64()) {
+                    if gid > 0 {
+                        group_ids.insert(gid);
+                    }
+                }
             }
         }
     }
@@ -291,7 +335,9 @@ pub async fn run(
     let mut friend_ids = HashSet::new();
     for f in &friends_list {
         if let Some(id) = f.get("id").and_then(|v| v.as_u64()) {
-            friend_ids.insert(id);
+            if id > 0 {
+                friend_ids.insert(id);
+            }
         }
     }
 
@@ -313,7 +359,10 @@ pub async fn run(
                             let path = friends_dir.join(format!("{fid}.json"));
                             let _ = write_json_file(&path, &resp);
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            let path = friends_dir.join(format!("{fid}.json"));
+                            let _ = write_json_file(&path, &serde_json::json!({"_status": 404, "not_found": true}));
+                        }
                         Err(e) => {
                             eprintln! { "    {STYLE_WARNING}⚠ Failed get_friend/{fid}: {e}{STYLE_WARNING:#}" };
                         }
@@ -325,111 +374,7 @@ pub async fn run(
     }
     println! { "  {STYLE_INFO}✓ Friends detail complete{STYLE_INFO:#}" };
 
-    // 3. User Profiles
-    let mut user_ids = HashSet::new();
-    if let Some(cuid) = current_user_id {
-        user_ids.insert(cuid);
-    }
-    for f in &friends_list {
-        if let Some(id) = f.get("id").and_then(|v| v.as_u64()) {
-            user_ids.insert(id);
-        }
-    }
-    for g in &groups_list {
-        if let Some(members) = g.get("members").and_then(|m| m.as_array()) {
-            for m in members {
-                if let Some(id) = m.get("id").and_then(|v| v.as_u64()) {
-                    user_ids.insert(id);
-                }
-            }
-        }
-    }
-    for exp in &all_expenses {
-        if let Some(cb) = exp
-            .get("created_by")
-            .and_then(|u| u.get("id"))
-            .and_then(|v| v.as_u64())
-        {
-            user_ids.insert(cb);
-        }
-        if let Some(ub) = exp
-            .get("updated_by")
-            .and_then(|u| u.get("id"))
-            .and_then(|v| v.as_u64())
-        {
-            user_ids.insert(ub);
-        }
-        if let Some(db) = exp
-            .get("deleted_by")
-            .and_then(|u| u.get("id"))
-            .and_then(|v| v.as_u64())
-        {
-            user_ids.insert(db);
-        }
-        if let Some(users) = exp.get("users").and_then(|u| u.as_array()) {
-            for u in users {
-                if let Some(uid) = u.get("user_id").and_then(|v| v.as_u64()) {
-                    user_ids.insert(uid);
-                }
-                if let Some(uid) = u
-                    .get("user")
-                    .and_then(|sub| sub.get("id"))
-                    .and_then(|v| v.as_u64())
-                {
-                    user_ids.insert(uid);
-                }
-            }
-        }
-    }
-
-    let mut detailed_users = Vec::new();
-    let pending_user_ids: Vec<u64> = user_ids
-        .into_iter()
-        .filter(|uid| {
-            let path = users_dir.join(format!("{uid}.json"));
-            if let Some(cached) = read_json_file(&path) {
-                if let Some(u) = cached.get("user").cloned() {
-                    detailed_users.push(u);
-                }
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
-
-    if !pending_user_ids.is_empty() {
-        println! { "  {STYLE_INFO}↳ Fetching {} user profile records...{STYLE_INFO:#}", pending_user_ids.len() };
-        let user_stream = stream::iter(pending_user_ids)
-            .map(|uid| {
-                let client = Arc::clone(&client);
-                let users_dir = users_dir.clone();
-                async move {
-                    let endpoint = format!("get_user/{uid}");
-                    match client.get_json_optional(&endpoint, &[]).await {
-                        Ok(Some(resp)) => {
-                            let path = users_dir.join(format!("{uid}.json"));
-                            let _ = write_json_file(&path, &resp);
-                            resp.get("user").cloned()
-                        }
-                        Ok(None) => None,
-                        Err(e) => {
-                            eprintln! { "    {STYLE_WARNING}⚠ Failed get_user/{uid}: {e}{STYLE_WARNING:#}" };
-                            None
-                        }
-                    }
-                }
-            })
-            .buffer_unordered(concurrency.max(1));
-
-        let fetched_users: Vec<Option<serde_json::Value>> = user_stream.collect().await;
-        for u in fetched_users.into_iter().flatten() {
-            detailed_users.push(u);
-        }
-    }
-    println! { "  {STYLE_INFO}✓ User profiles complete ({} records stored){STYLE_INFO:#}", detailed_users.len() };
-
-    // 4. Expenses & Comments (deep individual fetch)
+    // 3. Expenses & Comments (deep individual fetch)
     let expense_ids: Vec<u64> = all_expenses
         .iter()
         .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
@@ -502,7 +447,208 @@ pub async fn run(
 
         expense_details_stream.collect::<Vec<()>>().await;
     }
-    println! { "  {STYLE_INFO}✓ Deep entity traversal completed successfully{STYLE_INFO:#}" };
+    println! { "  {STYLE_INFO}✓ Expenses & comments traversal completed successfully{STYLE_INFO:#}" };
+
+    // 4. User Profiles (Harvest from current_user, friends, groups, debts, expenses, repayments, comments, and notifications)
+    let mut user_ids = HashSet::new();
+    if let Some(cuid) = current_user_id {
+        if cuid > 0 {
+            user_ids.insert(cuid);
+        }
+    }
+    for f in &friends_list {
+        if let Some(id) = f.get("id").and_then(|v| v.as_u64()) {
+            if id > 0 {
+                user_ids.insert(id);
+            }
+        }
+    }
+    for g in &detailed_groups {
+        if let Some(members) = g.get("members").and_then(|m| m.as_array()) {
+            for m in members {
+                if let Some(id) = m.get("id").and_then(|v| v.as_u64()) {
+                    if id > 0 {
+                        user_ids.insert(id);
+                    }
+                }
+            }
+        }
+        if let Some(debts) = g.get("original_debts").and_then(|d| d.as_array()) {
+            for d in debts {
+                if let Some(from) = d.get("from").and_then(|v| v.as_u64()) {
+                    if from > 0 {
+                        user_ids.insert(from);
+                    }
+                }
+                if let Some(to) = d.get("to").and_then(|v| v.as_u64()) {
+                    if to > 0 {
+                        user_ids.insert(to);
+                    }
+                }
+            }
+        }
+        if let Some(debts) = g.get("simplified_debts").and_then(|d| d.as_array()) {
+            for d in debts {
+                if let Some(from) = d.get("from").and_then(|v| v.as_u64()) {
+                    if from > 0 {
+                        user_ids.insert(from);
+                    }
+                }
+                if let Some(to) = d.get("to").and_then(|v| v.as_u64()) {
+                    if to > 0 {
+                        user_ids.insert(to);
+                    }
+                }
+            }
+        }
+    }
+    for exp in &all_expenses {
+        if let Some(cb) = exp
+            .get("created_by")
+            .and_then(|u| u.get("id"))
+            .and_then(|v| v.as_u64())
+        {
+            if cb > 0 {
+                user_ids.insert(cb);
+            }
+        }
+        if let Some(ub) = exp
+            .get("updated_by")
+            .and_then(|u| u.get("id"))
+            .and_then(|v| v.as_u64())
+        {
+            if ub > 0 {
+                user_ids.insert(ub);
+            }
+        }
+        if let Some(db) = exp
+            .get("deleted_by")
+            .and_then(|u| u.get("id"))
+            .and_then(|v| v.as_u64())
+        {
+            if db > 0 {
+                user_ids.insert(db);
+            }
+        }
+        if let Some(users) = exp.get("users").and_then(|u| u.as_array()) {
+            for u in users {
+                if let Some(uid) = u.get("user_id").and_then(|v| v.as_u64()) {
+                    if uid > 0 {
+                        user_ids.insert(uid);
+                    }
+                }
+                if let Some(uid) = u
+                    .get("user")
+                    .and_then(|sub| sub.get("id"))
+                    .and_then(|v| v.as_u64())
+                {
+                    if uid > 0 {
+                        user_ids.insert(uid);
+                    }
+                }
+            }
+        }
+        if let Some(reps) = exp.get("repayments").and_then(|r| r.as_array()) {
+            for r in reps {
+                if let Some(from) = r.get("from").and_then(|v| v.as_u64()) {
+                    if from > 0 {
+                        user_ids.insert(from);
+                    }
+                }
+                if let Some(to) = r.get("to").and_then(|v| v.as_u64()) {
+                    if to > 0 {
+                        user_ids.insert(to);
+                    }
+                }
+            }
+        }
+    }
+
+    // Harvest commenter user IDs from comments_dir
+    if let Ok(entries) = std::fs::read_dir(&comments_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("json") {
+                if let Some(cached) = read_json_file(&path) {
+                    if let Some(comments) = cached.get("comments").and_then(|c| c.as_array()) {
+                        for c in comments {
+                            if let Some(uid) = c
+                                .get("user")
+                                .and_then(|u| u.get("id"))
+                                .and_then(|v| v.as_u64())
+                            {
+                                if uid > 0 {
+                                    user_ids.insert(uid);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Harvest actors from notifications
+    if let Some(notifs) = notifs_resp.get("notifications").and_then(|n| n.as_array()) {
+        for n in notifs {
+            if let Some(cb) = n.get("created_by").and_then(|v| v.as_u64()) {
+                if cb > 0 {
+                    user_ids.insert(cb);
+                }
+            }
+        }
+    }
+
+    let mut detailed_users = Vec::new();
+    let pending_user_ids: Vec<u64> = user_ids
+        .into_iter()
+        .filter(|uid| {
+            let path = users_dir.join(format!("{uid}.json"));
+            if let Some(cached) = read_json_file(&path) {
+                if let Some(u) = cached.get("user").cloned() {
+                    detailed_users.push(u);
+                }
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    if !pending_user_ids.is_empty() {
+        println! { "  {STYLE_INFO}↳ Fetching {} user profile records...{STYLE_INFO:#}", pending_user_ids.len() };
+        let user_stream = stream::iter(pending_user_ids)
+            .map(|uid| {
+                let client = Arc::clone(&client);
+                let users_dir = users_dir.clone();
+                async move {
+                    let endpoint = format!("get_user/{uid}");
+                    match client.get_json_optional(&endpoint, &[]).await {
+                        Ok(Some(resp)) => {
+                            let path = users_dir.join(format!("{uid}.json"));
+                            let _ = write_json_file(&path, &resp);
+                            resp.get("user").cloned()
+                        }
+                        Ok(None) => {
+                            let path = users_dir.join(format!("{uid}.json"));
+                            let _ = write_json_file(&path, &serde_json::json!({"_status": 403, "forbidden": true}));
+                            None
+                        }
+                        Err(e) => {
+                            eprintln! { "    {STYLE_WARNING}⚠ Failed get_user/{uid}: {e}{STYLE_WARNING:#}" };
+                            None
+                        }
+                    }
+                }
+            })
+            .buffer_unordered(concurrency.max(1));
+
+        let fetched_users: Vec<Option<serde_json::Value>> = user_stream.collect().await;
+        for u in fetched_users.into_iter().flatten() {
+            detailed_users.push(u);
+        }
+    }
+    println! { "  {STYLE_INFO}✓ User profiles complete ({} records stored){STYLE_INFO:#}", detailed_users.len() };
 
     println! {};
 
@@ -530,14 +676,20 @@ pub async fn run(
 
     // ── Phase 6: Top-Level Manifest ──────────────────────────
     let elapsed = start_time.elapsed().as_secs_f64();
+    let total_exchanges = count_json_files_in_dir(&raw_exchanges_dir);
+    let total_comments = count_json_files_in_dir(&comments_dir);
+    let total_users = count_json_files_in_dir(&users_dir);
+    let total_groups = count_json_files_in_dir(&groups_dir);
+    let total_friends = count_json_files_in_dir(&friends_dir);
+
     let stats = BackupStats {
-        groups_count: groups_list.len(),
-        friends_count: friends_list.len(),
-        users_count: detailed_users.len(),
+        groups_count: total_groups.max(groups_list.len()),
+        friends_count: total_friends.max(friends_list.len()),
+        users_count: total_users.max(detailed_users.len()),
         expenses_count: all_expenses.len(),
-        comments_fetched_count: all_expenses.len(),
+        comments_fetched_count: total_comments,
         notifications_count: notifs_list,
-        raw_exchanges_count: client.exchange_count(),
+        raw_exchanges_count: total_exchanges,
         media_files_count: media_entries
             .iter()
             .filter(|e| e.status == "success")
@@ -557,11 +709,11 @@ pub async fn run(
 
     println! { "{STYLE_HEADER}🎉 Splitwise Snapshot Completed in {:.2}s{STYLE_HEADER:#}", elapsed };
     println! { "{STYLE_DIM}{bar}{STYLE_DIM:#}" };
-    println! { "  Total HTTP Exchanges logged : {STYLE_INFO}{}{STYLE_INFO:#}", client.exchange_count() };
+    println! { "  Total HTTP Exchanges logged : {STYLE_INFO}{total_exchanges}{STYLE_INFO:#}" };
     println! { "  Expenses aggregated         : {STYLE_INFO}{}{STYLE_INFO:#}", all_expenses.len() };
-    println! { "  Groups backed up            : {STYLE_INFO}{}{STYLE_INFO:#}", groups_list.len() };
-    println! { "  Friends backed up           : {STYLE_INFO}{}{STYLE_INFO:#}", friends_list.len() };
-    println! { "  User profiles saved         : {STYLE_INFO}{}{STYLE_INFO:#}", detailed_users.len() };
+    println! { "  Groups backed up            : {STYLE_INFO}{}{STYLE_INFO:#}", manifest.stats.groups_count };
+    println! { "  Friends backed up           : {STYLE_INFO}{}{STYLE_INFO:#}", manifest.stats.friends_count };
+    println! { "  User profiles saved         : {STYLE_INFO}{}{STYLE_INFO:#}", manifest.stats.users_count };
     println! { "  Media assets saved          : {STYLE_INFO}{}{STYLE_INFO:#}", manifest.stats.media_files_count };
     println! { "  Output location             : {STYLE_HEADER}{}{STYLE_HEADER:#}", output_dir.display() };
     println! {};

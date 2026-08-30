@@ -114,7 +114,7 @@ pub async fn download_all_media(
     for g in groups {
         let gid = g["id"].as_u64();
         if let Some(avatar) = g.get("avatar") {
-            for size in ["original", "large", "medium", "small"] {
+            for size in ["xxlarge", "xlarge", "large", "medium", "small", "original"] {
                 if let Some(url) = avatar.get(size).and_then(|v| v.as_str()) {
                     if !url.trim().is_empty() && !is_placeholder_url(url) {
                         tasks.push(MediaDownloadTask {
@@ -160,6 +160,30 @@ pub async fn download_all_media(
                     });
                 }
             }
+            if let Some(types) = parent.get("icon_types").and_then(|t| t.as_object()) {
+                for (type_name, sizes) in types {
+                    if let Some(sizes_obj) = sizes.as_object() {
+                        for (size_name, url_val) in sizes_obj {
+                            if let Some(url) = url_val.as_str() {
+                                if !url.trim().is_empty() && !is_placeholder_url(url) {
+                                    tasks.push(MediaDownloadTask {
+                                        category: format!("category_{type_name}_{size_name}"),
+                                        entity_id: pid,
+                                        source_url: url.to_string(),
+                                        subfolder: "categories",
+                                        filename_prefix: format!(
+                                            "cat_{}_{}_{}",
+                                            pid.unwrap_or(0),
+                                            type_name,
+                                            size_name
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(subcats) = parent.get("subcategories").and_then(|s| s.as_array()) {
                 for sub in subcats {
                     let subid = sub["id"].as_u64();
@@ -172,6 +196,32 @@ pub async fn download_all_media(
                                 subfolder: "categories",
                                 filename_prefix: format!("subcat_{}_icon", subid.unwrap_or(0)),
                             });
+                        }
+                    }
+                    if let Some(types) = sub.get("icon_types").and_then(|t| t.as_object()) {
+                        for (type_name, sizes) in types {
+                            if let Some(sizes_obj) = sizes.as_object() {
+                                for (size_name, url_val) in sizes_obj {
+                                    if let Some(url) = url_val.as_str() {
+                                        if !url.trim().is_empty() && !is_placeholder_url(url) {
+                                            tasks.push(MediaDownloadTask {
+                                                category: format!(
+                                                    "subcategory_{type_name}_{size_name}"
+                                                ),
+                                                entity_id: subid,
+                                                source_url: url.to_string(),
+                                                subfolder: "categories",
+                                                filename_prefix: format!(
+                                                    "subcat_{}_{}_{}",
+                                                    subid.unwrap_or(0),
+                                                    type_name,
+                                                    size_name
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -223,24 +273,20 @@ pub async fn download_all_media(
             async move {
                 let target_subfolder = media_dir.join(task.subfolder);
                 let ext = guess_extension(&task.source_url);
-                let initial_filename = format!("{}.{}", task.filename_prefix, ext);
-                let initial_path = target_subfolder.join(&initial_filename);
 
-                if initial_path.is_file() {
-                    if let Ok(meta) = std::fs::metadata(&initial_path) {
-                        if meta.len() > 0 {
-                            return MediaManifestEntry {
-                                category: task.category,
-                                entity_id: task.entity_id,
-                                source_url: task.source_url,
-                                saved_as: Some(format!("{}/{}", task.subfolder, initial_filename)),
-                                status: "success".to_string(),
-                                content_type: None,
-                                bytes: meta.len() as usize,
-                                error: None,
-                            };
-                        }
-                    }
+                if let Some(existing) =
+                    find_existing_media_file(&target_subfolder, &task.filename_prefix)
+                {
+                    return MediaManifestEntry {
+                        category: task.category,
+                        entity_id: task.entity_id,
+                        source_url: task.source_url,
+                        saved_as: Some(format!("{}/{}", task.subfolder, existing.filename)),
+                        status: "success".to_string(),
+                        content_type: None,
+                        bytes: existing.bytes,
+                        error: None,
+                    };
                 }
 
                 match client.download_media_bytes(&task.source_url).await {
@@ -322,9 +368,44 @@ pub async fn download_all_media(
     Ok(entries)
 }
 
+struct ExistingMediaFile {
+    filename: String,
+    bytes: usize,
+}
+
+fn find_existing_media_file(subfolder: &Path, prefix: &str) -> Option<ExistingMediaFile> {
+    if let Ok(entries) = std::fs::read_dir(subfolder) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                    if let Some(rest) = file_name.strip_prefix(prefix) {
+                        if rest.starts_with('.') {
+                            if let Ok(meta) = path.metadata() {
+                                if meta.len() > 0 {
+                                    return Some(ExistingMediaFile {
+                                        filename: file_name.to_string(),
+                                        bytes: meta.len() as usize,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn is_placeholder_url(url: &str) -> bool {
-    // Check if the URL is an obvious default or nil asset
-    url.contains("default-avatar") || url.contains("nil") || url.starts_with("data:")
+    let trimmed = url.trim();
+    trimmed.is_empty()
+        || trimmed == "nil"
+        || trimmed.ends_with("/nil.png")
+        || trimmed.ends_with("/nil")
+        || trimmed.contains("default-avatar")
+        || trimmed.starts_with("data:")
 }
 
 fn guess_extension(url: &str) -> &'static str {

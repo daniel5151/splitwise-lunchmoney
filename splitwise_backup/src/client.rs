@@ -12,6 +12,7 @@ use anstream::println;
 use anyhow::Context;
 use lm_common::style::*;
 use reqwest::header::HeaderMap;
+use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
 
 use crate::exchange::ExchangeMetadata;
@@ -30,6 +31,7 @@ pub struct RawClient {
     redact_api_key: bool,
     semaphore: Arc<Semaphore>,
     inter_request_delay: Duration,
+    next_request_time: Arc<Mutex<Instant>>,
     verbose: bool,
     max_retries: u32,
     initial_delay: Duration,
@@ -46,15 +48,17 @@ impl RawClient {
         redact_api_key: bool,
         verbose: bool,
     ) -> Self {
+        let initial_counter = detect_initial_exchange_counter(&exchanges_dir);
         Self {
             http,
             api_key,
             base_url,
             exchanges_dir,
-            exchange_counter: AtomicUsize::new(0),
+            exchange_counter: AtomicUsize::new(initial_counter),
             redact_api_key,
             semaphore: Arc::new(Semaphore::new(concurrency.max(1))),
             inter_request_delay,
+            next_request_time: Arc::new(Mutex::new(Instant::now())),
             verbose,
             max_retries: 8,
             initial_delay: Duration::from_secs(3),
@@ -96,8 +100,19 @@ impl RawClient {
         let mut attempts = 0u32;
 
         loop {
+            // Global rate limiting across all concurrent tasks:
+            // Ensure consecutive requests are scheduled at least inter_request_delay apart.
             if !self.inter_request_delay.is_zero() {
-                tokio::time::sleep(self.inter_request_delay).await;
+                let sleep_duration = {
+                    let mut next_time = self.next_request_time.lock().await;
+                    let now = Instant::now();
+                    let scheduled = if *next_time > now { *next_time } else { now };
+                    *next_time = scheduled + self.inter_request_delay;
+                    scheduled.saturating_duration_since(now)
+                };
+                if !sleep_duration.is_zero() {
+                    tokio::time::sleep(sleep_duration).await;
+                }
             }
 
             let timestamp = jiff::Zoned::now().to_string();
@@ -122,6 +137,13 @@ impl RawClient {
                             delay.as_secs_f64(),
                             max = self.max_retries,
                         };
+                        {
+                            let mut next_time = self.next_request_time.lock().await;
+                            let resume_at = Instant::now() + delay;
+                            if resume_at > *next_time {
+                                *next_time = resume_at;
+                            }
+                        }
                         tokio::time::sleep(delay).await;
                         continue;
                     }
@@ -136,7 +158,7 @@ impl RawClient {
             let status_text = status.canonical_reason().unwrap_or("").to_string();
             let resp_headers = header_map_to_btreemap(res.headers());
 
-            // Handle rate limiting (429 or Cloudflare 1015)
+            // Handle rate limiting (429 or Cloudflare 1015 / 503 / 529)
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS
                 || status_code == 503
                 || status_code == 529
@@ -163,6 +185,13 @@ impl RawClient {
                         delay.as_secs_f64(),
                         max = self.max_retries,
                     };
+                    {
+                        let mut next_time = self.next_request_time.lock().await;
+                        let resume_at = Instant::now() + delay;
+                        if resume_at > *next_time {
+                            *next_time = resume_at;
+                        }
+                    }
                     tokio::time::sleep(delay).await;
                     continue;
                 }
@@ -184,17 +213,31 @@ impl RawClient {
                 }
             };
 
-            // Check if body contains Cloudflare rate limit error code 1015 even if status wasn't 429
+            // Check if body contains Cloudflare rate limit error or challenge
             if let Some(text) = json_body.get("_raw_text").and_then(|t| t.as_str()) {
-                if text.contains("1015") || text.contains("error code: 1015") {
+                let lower = text.to_ascii_lowercase();
+                if lower.contains("1015")
+                    || lower.contains("error code: 1015")
+                    || lower.contains("rate limit")
+                    || lower.contains("cloudflare")
+                    || lower.contains("attention required")
+                    || lower.contains("just a moment...")
+                {
                     if attempts < self.max_retries {
                         attempts += 1;
                         let delay = Duration::from_secs((5 * attempts as u64).min(60));
                         eprintln! {
-                            "  {STYLE_WARNING}⏳ Cloudflare Rate Limit 1015 on {endpoint} — backing off {:.0}s before retry ({attempts}/{max})...{STYLE_WARNING:#}",
+                            "  {STYLE_WARNING}⏳ Cloudflare Rate Limit / Challenge on {endpoint} — backing off {:.0}s before retry ({attempts}/{max})...{STYLE_WARNING:#}",
                             delay.as_secs_f64(),
                             max = self.max_retries,
                         };
+                        {
+                            let mut next_time = self.next_request_time.lock().await;
+                            let resume_at = Instant::now() + delay;
+                            if resume_at > *next_time {
+                                *next_time = resume_at;
+                            }
+                        }
                         tokio::time::sleep(delay).await;
                         continue;
                     }
@@ -260,8 +303,9 @@ impl RawClient {
                 };
             }
 
-            // If 404 or 403, return Ok(None) so caller can gracefully skip deleted or inaccessible entities
-            if status_code == 404 || status_code == 403 {
+            // If 404 or 403, return Ok(None) so caller can gracefully skip deleted or inaccessible entities.
+            // Note: If the response was an unparsed HTML error page from Cloudflare or CDN, do not treat as Ok(None).
+            if (status_code == 404 || status_code == 403) && json_body.get("_raw_text").is_none() {
                 return Ok(None);
             }
 
@@ -316,7 +360,10 @@ impl RawClient {
             let status = res.status();
             let status_code = status.as_u16();
 
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status_code == 503 || status_code == 529 {
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status_code == 503
+                || status_code == 529
+            {
                 if attempts < self.max_retries {
                     attempts += 1;
                     let delay = if let Some(retry_after) =
@@ -357,11 +404,49 @@ impl RawClient {
             return Ok((bytes, content_type));
         }
     }
+}
 
-    /// Get total number of HTTP exchanges logged so far.
-    pub fn exchange_count(&self) -> usize {
-        self.exchange_counter.load(Ordering::SeqCst)
+fn detect_initial_exchange_counter(exchanges_dir: &Path) -> usize {
+    if !exchanges_dir.is_dir() {
+        return 0;
     }
+
+    let mut max_idx = 0usize;
+    if let Ok(entries) = std::fs::read_dir(exchanges_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    // Filename format: {index:04}_GET_{endpoint}
+                    if let Some(prefix) = file_stem.split('_').next() {
+                        if let Ok(idx) = prefix.parse::<usize>() {
+                            if idx > max_idx {
+                                max_idx = idx;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    max_idx
+}
+
+pub fn count_json_files_in_dir(dir: &Path) -> usize {
+    if !dir.is_dir() {
+        return 0;
+    }
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("json") {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 fn header_map_to_btreemap(headers: &HeaderMap) -> BTreeMap<String, String> {

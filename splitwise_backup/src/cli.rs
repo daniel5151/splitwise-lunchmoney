@@ -28,12 +28,12 @@ pub struct Cli {
     #[arg(long, default_value = "https://secure.splitwise.com/api/v3.0")]
     pub api_url: String,
 
-    /// Number of concurrent requests for fetching deep entity details and media
-    #[arg(long, default_value_t = 3)]
+    /// Number of concurrent request tasks for fetching deep entity details and media (default: 2)
+    #[arg(long, default_value_t = 2)]
     pub concurrency: usize,
 
-    /// Delay in milliseconds between consecutive requests from a worker (default: 75ms)
-    #[arg(long, default_value_t = 75)]
+    /// Minimum delay in milliseconds between consecutive API requests (global rate limit, default: 300ms)
+    #[arg(long, default_value_t = 300)]
     pub delay_ms: u64,
 
     /// Skip downloading media files (receipt attachments, user avatars, group covers)
