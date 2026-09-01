@@ -8,7 +8,7 @@ foundation... it makes sense to keep 'em all under one roof.
 
 > [!WARNING]
 >
-> This repo is nearly 100% free range Gemini Flash 3.5 / Opus 4.8 vibe code.
+> This repo is nearly 100% free range Gemini 3.X Flash / Opus 4.8 vibe code.
 >
 > While The Prompter (Daniel Prilik) _has_ been auditing code as it's generated,
 > and trying his darndest to make sure obvious slop gets refactored and
@@ -28,6 +28,7 @@ foundation... it makes sense to keep 'em all under one roof.
 | [`lm-splitwise-sync`](lm_splitwise_sync/README.md)     | Sync Splitwise transactions and outstanding balances into (per-currency) Lunch Money accounts.                                   |
 | [`lm-payslip-importer`](lm_payslip_importer/README.md) | Break down payslip events (direct deposits, RSU vests) into granular transactions (taxes, imputed income, reimbursements, etc.). |
 | [`lm-venmo-plaidfix`](lm_venmo_plaidfix/README.md)     | Fixup various issues caused by Venmo's suboptimal Plaid integration.                                                             |
+| [`splitwise-backup`](splitwise_backup/README.md)       | Full backup of all Splitwise data to raw raw JSON files, with ability to self-host read-only mock Splitwise API server.          |
 
 The user-facing entry point to all tools is the **`lm-utils` binary**, which can be run in one of two modes:
 

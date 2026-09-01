@@ -41,7 +41,7 @@ impl Tool for SplitwiseTool {
     ) -> anyhow::Result<()> {
         match cli.command {
             cli::Commands::Init(init_args) => {
-                commands::init::run_init(init_args, config_path).await?;
+                commands::init::run_init(init_args, config_path, cli.splitwise_api_url).await?;
             }
             cmd => {
                 let config = tool_config.ok_or_else(|| {
@@ -56,8 +56,15 @@ impl Tool for SplitwiseTool {
                          `lm-utils splitwise-sync init` to configure it."
                     )
                 })?;
-                let splitwise =
-                    api::splitwise::Client::new(cx.http.clone(), config.splitwise.api_key.clone());
+                let splitwise_api_url = cli
+                    .splitwise_api_url
+                    .clone()
+                    .or_else(|| config.splitwise.api_url.clone());
+                let splitwise = api::splitwise::Client::new(
+                    cx.http.clone(),
+                    config.splitwise.api_key.clone(),
+                    splitwise_api_url,
+                );
                 let lunch_money = api::lunch_money::Client::new(
                     cx.http.clone(),
                     lm_api_key,

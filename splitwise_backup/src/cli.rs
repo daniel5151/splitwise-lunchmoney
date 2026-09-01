@@ -2,15 +2,33 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use clap::Parser;
+use clap::Subcommand;
 
-/// Standalone CLI tool to download a comprehensive snapshot of Splitwise account data.
+/// Standalone CLI tool and offline mock server for Splitwise API v3.
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "splitwise_backup",
-    about = "Comprehensive, raw-fidelity backup tool for Splitwise API v3",
+    about = "Comprehensive, raw-fidelity backup tool and offline mock server for Splitwise API v3",
     version
 )]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
+    #[command(flatten)]
+    pub backup_args: BackupArgs,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum Commands {
+    /// Create a new Splitwise API backup snapshot
+    Backup(BackupArgs),
+    /// Start a read-only mock Splitwise API server from an existing backup snapshot
+    Serve(ServeArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct BackupArgs {
     /// Splitwise API key (Bearer token). If not specified, checks $SPLITWISE_API_KEY
     /// or lm_utils.toml.
     #[arg(short = 'k', long, env = "SPLITWISE_API_KEY")]
@@ -49,7 +67,26 @@ pub struct Cli {
     pub verbose: bool,
 }
 
-impl Cli {
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct ServeArgs {
+    /// Directory containing the Splitwise backup snapshot (default: auto-discovers latest splitwise-backup-*)
+    #[arg(short = 'd', long = "dir", alias = "backup-dir")]
+    pub dir: Option<PathBuf>,
+
+    /// Port to listen on (default: 8080)
+    #[arg(short = 'p', long, default_value_t = 8080, env = "SPLITWISE_MOCK_PORT")]
+    pub port: u16,
+
+    /// Host/IP address to bind the webserver to (default: 127.0.0.1)
+    #[arg(short = 'b', long, default_value = "127.0.0.1")]
+    pub bind: String,
+
+    /// Verbose logging for incoming requests
+    #[arg(short, long)]
+    pub verbose: bool,
+}
+
+impl BackupArgs {
     /// Resolve the Splitwise API key from CLI flag, environment variable, or lm_utils.toml.
     pub fn resolve_api_key(&self) -> anyhow::Result<String> {
         if let Some(key) = &self.api_key {

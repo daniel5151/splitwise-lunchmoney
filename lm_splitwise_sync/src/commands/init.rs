@@ -23,6 +23,7 @@ impl std::fmt::Display for SplitwiseUser {
 pub(crate) async fn run_init(
     args: crate::cli::InitArgs,
     output_path: std::path::PathBuf,
+    splitwise_api_url: Option<String>,
 ) -> anyhow::Result<()> {
     if args.just_categorize {
         let doc = lm_common::config::editor::read_or_new(&output_path)?;
@@ -57,8 +58,11 @@ pub(crate) async fn run_init(
         println! {};
         println! { "{STYLE_INFO}🔗 Connecting to Splitwise API to fetch categories...{STYLE_INFO:#}" };
         let http_client = reqwest::Client::new();
-        let sw_client =
-            crate::api::splitwise::Client::new(http_client.clone(), splitwise_api_key.clone());
+        let sw_client = crate::api::splitwise::Client::new(
+            http_client.clone(),
+            splitwise_api_key.clone(),
+            splitwise_api_url.clone(),
+        );
         let sw_categories = sw_client.fetch_categories().await?;
 
         let lm_client = if !lunch_money_api_key.trim().is_empty() {
@@ -97,8 +101,11 @@ pub(crate) async fn run_init(
         .context("Failed to get Splitwise API Key")?;
 
     let http_client = reqwest::Client::new();
-    let sw_client =
-        crate::api::splitwise::Client::new(http_client.clone(), splitwise_api_key.clone());
+    let sw_client = crate::api::splitwise::Client::new(
+        http_client.clone(),
+        splitwise_api_key.clone(),
+        splitwise_api_url,
+    );
 
     println! {};
     println! { "{STYLE_INFO}🔗 Connecting to Splitwise API...{STYLE_INFO:#}" };

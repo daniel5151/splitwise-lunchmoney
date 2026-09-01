@@ -2355,6 +2355,7 @@ version = "0.4.0"
 dependencies = [
  "anstream",
  "anyhow",
+ "axum",
  "clap",
  "futures-util",
  "jiff",
@@ -2365,6 +2366,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml_edit",
+ "tower-http",
 ]
 
 [[package]]

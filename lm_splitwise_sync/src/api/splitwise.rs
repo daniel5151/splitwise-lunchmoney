@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub struct Client {
     http: reqwest::Client,
     api_key: String,
+    base_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -24,8 +25,16 @@ impl<'de> Deserialize<'de> for Expense {
 }
 
 impl Client {
-    pub fn new(http: reqwest::Client, api_key: String) -> Self {
-        Self { http, api_key }
+    pub fn new(http: reqwest::Client, api_key: String, base_url: Option<String>) -> Self {
+        let base_url = base_url
+            .unwrap_or_else(|| "https://secure.splitwise.com/api/v3.0".to_string())
+            .trim_end_matches('/')
+            .to_string();
+        Self {
+            http,
+            api_key,
+            base_url,
+        }
     }
 
     async fn fetch<T: serde::de::DeserializeOwned, Q: serde::Serialize + ?Sized>(
@@ -33,7 +42,7 @@ impl Client {
         endpoint: &str,
         query: &Q,
     ) -> anyhow::Result<T> {
-        let url = format!("https://secure.splitwise.com/api/v3.0/{}", endpoint);
+        let url = format!("{}/{}", self.base_url, endpoint.trim_start_matches('/'));
         let res = self
             .http
             .get(&url)

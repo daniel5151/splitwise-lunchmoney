@@ -70,6 +70,7 @@ pub struct SplitwiseConfig {
     pub user_id: u64,
     #[serde(default)]
     pub ignored_groups: Vec<IgnoredGroup>,
+    pub api_url: Option<String>,
 }
 
 impl SplitwiseConfig {

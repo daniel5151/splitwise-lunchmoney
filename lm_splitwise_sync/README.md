@@ -2,17 +2,6 @@
 
 Sync Splitwise transactions (and global outstanding balances) into Lunch Money manual accounts.
 
-> [!WARNING]
->
-> This is 100% free range Gemini Flash 3.5 vibe code.
->
-> While the prompter (Daniel Prilik) _has_ been auditing code as it's generated,
-> taking care to make sure obvious slop gets refactored and tightened up... you
-> may wish to audit the code yourself before using this project.
->
-> That said - the prompter _is_ actively using this code with his personal
-> splitwise / lunch-money accounts... so it's probably fine™️
-
 ---
 
 ## ⚡ Key Features
@@ -25,6 +14,7 @@ Sync Splitwise transactions (and global outstanding balances) into Lunch Money m
 - **Multi-Currency Support**: Automatically maps and syncs transactions and balances to their respective manual accounts based on currency.
 - **Dry-Run Mode**: Use `--dry-run` on any sync command to preview modifications safely.
 - **CSV Reporting**: Supports exporting synchronization operations (inserts, updates, deletes, and balance updates) to CSV files using `--csv`.
+- **Custom Splitwise API Endpoint Support**: Use `--splitwise-api-url` or configure `[splitwise].api_url` to point at a custom or local mock Splitwise API server (such as the in-repo [`splitwise-backup`](../splitwise_backup/README.md) mock server).
 - **Data Preservation**: Only modifies a transaction's `amount` and `currency` in Lunch Money. Any local changes to `payee`, `notes`, or `date` in Lunch Money are preserved.
 
 
@@ -52,6 +42,9 @@ Sync Splitwise transactions (and global outstanding balances) into Lunch Money m
 ---
 
 ## 🔧 Commands & Subcommands
+
+### Global Options
+- **`--splitwise-api-url <URL>`**: Override the Splitwise API base URL (defaults to `https://secure.splitwise.com/api/v3.0` or `$SPLITWISE_API_URL` / `[splitwise].api_url`). Use this flag to target a local mock Splitwise API server.
 
 ### 1. Configuration Wizard
 - **`init`**: Runs the interactive configuration setup.
@@ -146,6 +139,9 @@ api_key = "Zg8TzP..."
 # Your Splitwise user ID
 user_id = 14417235
 
+# (Optional) Override Splitwise API base URL (default: https://secure.splitwise.com/api/v3.0)
+# api_url = "http://127.0.0.1:8080/api/v3.0"
+
 # Array of Splitwise group IDs or names to ignore (optional)
 ignored_groups = [
     98307552,
@@ -185,6 +181,20 @@ orphaned_tag = "🧾⚠️ Splitwise Orphaned"
 "Transportation:Taxi" = "Ridesharing"
 ```
 
+---
+
+## 🌐 Self-Hosted Mock API Server Testing
+
+You can run `lm-splitwise-sync` against an offline, local mock Splitwise API server powered by an existing snapshot generated via the in-repo [`splitwise-backup`](../splitwise_backup/README.md) tool:
+
+```console
+# 1. Start the mock server from a backup snapshot
+$ cargo run -p splitwise-backup -- serve --port 8080
+
+# 2. Run queries or syncs against the local mock server
+$ lm-utils splitwise-sync --splitwise-api-url http://127.0.0.1:8080/api/v3.0 query groups
+$ lm-utils --dry-run splitwise-sync --splitwise-api-url http://127.0.0.1:8080/api/v3.0 sync window "14 days"
+```
 
 ---
 

@@ -5,6 +5,10 @@ use clap::Subcommand;
 /// Synchronize Splitwise transactions and global outstanding balances into Lunch Money manual accounts
 #[derive(Args, Debug)]
 pub struct Cli {
+    /// Override the Splitwise API base URL (default: https://secure.splitwise.com/api/v3.0)
+    #[arg(long, global = true, env = "SPLITWISE_API_URL")]
+    pub splitwise_api_url: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }

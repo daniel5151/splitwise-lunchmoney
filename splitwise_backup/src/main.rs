@@ -1,16 +1,14 @@
-mod backup;
-mod cli;
-mod client;
-mod exchange;
-mod media;
-
 use std::sync::Arc;
 
 use anstream::eprintln;
 use clap::Parser;
-use cli::Cli;
-use client::RawClient;
 use lm_common::style::*;
+use splitwise_backup::backup;
+use splitwise_backup::cli::BackupArgs;
+use splitwise_backup::cli::Cli;
+use splitwise_backup::cli::Commands;
+use splitwise_backup::client::RawClient;
+use splitwise_backup::server;
 
 #[tokio::main]
 async fn main() {
@@ -29,8 +27,16 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let api_key = cli.resolve_api_key()?;
-    let output_dir = cli.resolve_output_dir();
+    match cli.command {
+        Some(Commands::Serve(serve_args)) => server::run(serve_args).await,
+        Some(Commands::Backup(backup_args)) => run_backup(backup_args).await,
+        None => run_backup(cli.backup_args).await,
+    }
+}
+
+async fn run_backup(args: BackupArgs) -> anyhow::Result<()> {
+    let api_key = args.resolve_api_key()?;
+    let output_dir = args.resolve_output_dir();
     let exchanges_dir = output_dir.join("raw_exchanges");
 
     let http = reqwest::Client::builder().use_rustls_tls().build()?;
@@ -38,20 +44,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let client = Arc::new(RawClient::new(
         http,
         api_key,
-        cli.api_url.clone(),
+        args.api_url.clone(),
         exchanges_dir,
-        cli.concurrency,
-        std::time::Duration::from_millis(cli.delay_ms),
-        !cli.preserve_api_key,
-        cli.verbose,
+        args.concurrency,
+        std::time::Duration::from_millis(args.delay_ms),
+        !args.preserve_api_key,
+        args.verbose,
     ));
 
     backup::run(
         client,
         &output_dir,
-        cli.skip_media,
-        cli.concurrency,
-        &cli.api_url,
+        args.skip_media,
+        args.concurrency,
+        &args.api_url,
     )
     .await
 }
